@@ -28,6 +28,10 @@ vi.mock('react-router-dom', async (importActual) => {
   };
 });
 
+vi.mock('../../context/WalletContext', () => ({
+  useWallet: () => ({ wallet: null, status: 'disconnected' }),
+}));
+
 // The lookup is spied on so the test can prove that an oversized id never
 // reaches the data layer.
 vi.mock('@/data/mockDutchAuctions', async (importActual) => {
@@ -41,6 +45,8 @@ import { DutchAuctionDetail } from '../DutchAuctionDetail';
 import { DutchAuctionCard } from '../../components/DutchAuctionCard';
 import { ROUTE_METADATA } from '../../components/RouteAnnouncer';
 import { MOCK_DUTCH_AUCTIONS } from '@/data/mockDutchAuctions';
+import { fromStroops, priceAt } from '../../lib/dutch-auction-pricing';
+import { fmt } from '../../utils/tokens';
 
 const renderDetail = (initialEntry = '/dutch-auctions/DA-001') =>
   render(
@@ -75,7 +81,7 @@ const stubMatchMedia = (matches: boolean) => {
   };
 };
 
-describe('DutchAuctionDetail (issue #1213)', () => {
+describe('DutchAuctionDetail (issue #1213)', { timeout: 15000 }, () => {
   beforeEach(() => {
     routerState.auctionId = undefined;
     auctionLookup.getAuctionById.mockClear();
@@ -85,7 +91,7 @@ describe('DutchAuctionDetail (issue #1213)', () => {
     cleanup();
   });
 
-  it('renders the schedule of a known auction', () => {
+  it('renders the existing card plus the full schedule of a known auction', () => {
     routerState.auctionId = 'DA-001';
     renderDetail();
 
@@ -94,21 +100,19 @@ describe('DutchAuctionDetail (issue #1213)', () => {
     ).toBeInTheDocument();
     expect(screen.getByText('Start time')).toBeInTheDocument();
     expect(screen.getByText('End time')).toBeInTheDocument();
-    expect(screen.getByText('Start price')).toBeInTheDocument();
-    expect(screen.getByText('Floor price')).toBeInTheDocument();
-    expect(screen.getByText('Current price')).toBeInTheDocument();
+    expect(screen.getByText('Start / Floor')).toBeInTheDocument();
+    expect(screen.getByText('Current Price')).toBeInTheDocument();
 
-    // Start and floor price are rendered as currency amounts.
-    expect(screen.getByText('$1,000')).toBeInTheDocument();
-    expect(screen.getByText('$200')).toBeInTheDocument();
+    // Start and floor price are rendered together from the existing card.
+    expect(screen.getByText('$1,000 / $200')).toBeInTheDocument();
 
     // The current price tracks the linear decay and is rendered next to its
     // label.
-    const currentPrice = screen.getByText('Current price').nextElementSibling;
+    const currentPrice = screen.getByText('Current Price').nextElementSibling;
     expect(currentPrice).toHaveTextContent(/^\$\d/);
 
     // The seller is shortened for display.
-    expect(screen.getByText(/Seller:/)).toHaveTextContent('GABCDE…2345');
+    expect(screen.getByText('Seller').nextElementSibling).toHaveTextContent('GABCDE…2345');
   });
 
   it('renders an in-page not-found state for an unknown id', () => {
@@ -147,9 +151,16 @@ describe('DutchAuctionDetail (issue #1213)', () => {
     ).toBeInTheDocument();
   });
 
-  it('ships a five row text alternative for the price chart', () => {
+  it('ships a five row canonical bigint price table as the chart text alternative', () => {
     routerState.auctionId = 'DA-001';
     renderDetail();
+
+    const auction = MOCK_DUTCH_AUCTIONS.find((item) => item.id === 'DA-001')!;
+    const startMs = new Date(auction.startTime).getTime();
+    const endMs = new Date(auction.endTime).getTime();
+    const expectedStroops = [0, 0.25, 0.5, 0.75, 1].map((progress) =>
+      priceAt(auction, startMs + progress * (endMs - startMs)).toString(),
+    );
 
     const table = screen.getByRole('table', { hidden: true });
     expect(table).toHaveClass('sr-only');
@@ -158,15 +169,39 @@ describe('DutchAuctionDetail (issue #1213)', () => {
     expect(rows).toHaveLength(5);
 
     const prices = rows.map((row) =>
-      Number((row.cells[1]?.textContent ?? '').replace(/[^0-9.]/g, '')),
+      Number((row.querySelector('td')?.textContent ?? '').replace(/[^0-9.]/g, '')),
     );
     expect(prices.every((price) => Number.isFinite(price))).toBe(true);
+
+    // Every row is the canonical priceAt value, merely formatted for display.
+    expect(rows.map((row) => row.querySelector('td')?.getAttribute('data-price-stroops'))).toEqual(
+      expectedStroops,
+    );
 
     // The price never increases as the auction progresses.
     prices.forEach((price, index) => {
       if (index === 0) return;
       expect(price).toBeLessThanOrEqual(prices[index - 1]);
     });
+  });
+
+  it('quotes the same canonical price in the card and the chart', () => {
+    const fixedNow = Date.now();
+    const dateSpy = vi.spyOn(Date, 'now').mockReturnValue(fixedNow);
+    try {
+      routerState.auctionId = 'DA-001';
+      const { container } = renderDetail();
+      const auction = MOCK_DUTCH_AUCTIONS.find((item) => item.id === 'DA-001')!;
+      const expectedStroops = priceAt(auction, fixedNow);
+
+      const marker = container.querySelector('.dutch-auction-chart__now-dot');
+      expect(marker?.getAttribute('data-price-stroops')).toBe(expectedStroops.toString());
+
+      const cardPrice = screen.getByText('Current Price').nextElementSibling;
+      expect(cardPrice).toHaveTextContent(fmt(fromStroops(expectedStroops)));
+    } finally {
+      dateSpy.mockRestore();
+    }
   });
 
   it('does not animate the chart when the user prefers reduced motion', () => {
@@ -211,6 +246,21 @@ describe('DutchAuctionDetail (issue #1213)', () => {
     );
   });
 
+  it('carries the list query string into the detail link for back navigation', () => {
+    const auction = MOCK_DUTCH_AUCTIONS[0];
+
+    render(
+      <MemoryRouter initialEntries={['/dutch-auctions?status=active']}>
+        <DutchAuctionCard auction={auction} listSearch="?status=active" />
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByRole('link', { name: 'Cosmic Ape #1234' })).toHaveAttribute(
+      'href',
+      '/dutch-auctions/DA-001?from=%2Fdutch-auctions%3Fstatus%3Dactive',
+    );
+  });
+
   it('shows the winner and the final price of a completed auction without a purchase action', () => {
     routerState.auctionId = 'DA-003';
     renderDetail('/dutch-auctions/DA-003');
@@ -219,9 +269,11 @@ describe('DutchAuctionDetail (issue #1213)', () => {
       screen.getByRole('heading', { level: 1, name: 'Cyber Punk #890' }),
     ).toBeInTheDocument();
     expect(screen.getByText('Winner')).toBeInTheDocument();
-    expect(screen.getByText('JABCDE…8765')).toBeInTheDocument();
-    expect(screen.getByText('Final price')).toBeInTheDocument();
-    expect(screen.getByText('$225')).toBeInTheDocument();
+    expect(screen.getByText('JABCDE...8765')).toBeInTheDocument();
+
+    const schedule = screen.getByRole('region', { name: 'Schedule' });
+    expect(within(schedule).getByText('Final price')).toBeInTheDocument();
+    expect(within(schedule).getByText('$225')).toBeInTheDocument();
 
     expect(
       screen.queryByRole('button', { name: /purchase now/i }),

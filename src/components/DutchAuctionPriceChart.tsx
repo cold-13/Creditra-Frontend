@@ -1,6 +1,7 @@
 import type { DutchAuction } from '../types/dutchAuction';
 import { usePrefersReducedMotion } from '../hooks/usePrefersReducedMotion';
-import { getAuctionProgress, priceAtProgress } from '../utils/dutchAuction';
+import { fromStroops, priceAt, validateSchedule } from '../lib/dutch-auction-pricing';
+import { getAuctionProgress } from '../utils/dutchAuction';
 import './DutchAuctionPriceChart.css';
 
 /**
@@ -39,6 +40,7 @@ const SAMPLE_LABELS: Record<number, string> = {
  * The currency formatted price is rendered by the page itself; the chart and
  * its text alternative use plain numbers so a screen reader (or a test) sees
  * one price per place instead of the same string repeated across the page.
+ * This is a presentation-only conversion from the canonical stroop value.
  */
 const plainNumber = (value: number, maximumFractionDigits = 2) =>
   value.toLocaleString('en-US', { maximumFractionDigits });
@@ -54,6 +56,8 @@ export interface DutchAuctionPriceChartProps {
 /**
  * Accessible price-decay chart for a Dutch auction.
  *
+ * - Prices are sampled with the canonical bigint `priceAt` implementation and
+ *   only converted to display units for rendering.
  * - Hand written SVG, no charting dependency. The line is drawn from the
  *   start price down to the floor price across the auction window, with a
  *   marker showing where "now" sits on the curve.
@@ -67,19 +71,45 @@ export interface DutchAuctionPriceChartProps {
 export function DutchAuctionPriceChart({ auction, now, className }: DutchAuctionPriceChartProps) {
   const prefersReducedMotion = usePrefersReducedMotion();
   const timestamp = now ?? Date.now();
+  const validation = validateSchedule(auction);
 
-  const high = Math.max(auction.startPrice, auction.floorPrice);
-  const low = Math.min(auction.startPrice, auction.floorPrice);
+  if (!validation.ok) {
+    return (
+      <div className={['dutch-auction-chart', className].filter(Boolean).join(' ')}>
+        <p style={{ margin: 0 }}>
+          Pricing unavailable
+          <span className="sr-only">{` (${validation.reason})`}</span>
+        </p>
+      </div>
+    );
+  }
+
+  const startMs = new Date(auction.startTime).getTime();
+  const endMs = new Date(auction.endTime).getTime();
+  const windowMs = endMs - startMs;
+
+  const startPriceStroops = priceAt(auction, startMs);
+  const endPriceStroops = priceAt(auction, endMs);
+  const highStroops =
+    startPriceStroops >= endPriceStroops ? startPriceStroops : endPriceStroops;
+  const lowStroops =
+    startPriceStroops <= endPriceStroops ? startPriceStroops : endPriceStroops;
+  const high = fromStroops(highStroops);
+  const low = fromStroops(lowStroops);
   const range = high - low || 1;
 
   const xFor = (progress: number) => PLOT_LEFT + progress * PLOT_WIDTH;
   const yFor = (price: number) => PLOT_BOTTOM - ((price - low) / range) * PLOT_HEIGHT;
 
   const samples = SAMPLE_POINTS.map((progress) => {
-    const price = priceAtProgress(auction, progress);
+    const sampleMs = startMs + progress * windowMs;
+    const priceStroops = priceAt(auction, sampleMs);
+    const price = fromStroops(priceStroops);
+
     return {
       progress,
       label: SAMPLE_LABELS[progress],
+      priceStroops,
       price,
       x: xFor(progress),
       y: yFor(price),
@@ -89,7 +119,8 @@ export function DutchAuctionPriceChart({ auction, now, className }: DutchAuction
   const points = samples.map((sample) => `${sample.x.toFixed(2)},${sample.y.toFixed(2)}`).join(' ');
 
   const progress = getAuctionProgress(auction, timestamp);
-  const currentPrice = priceAtProgress(auction, progress);
+  const currentPriceStroops = priceAt(auction, timestamp);
+  const currentPrice = fromStroops(currentPriceStroops);
   const markerX = xFor(progress);
   const markerY = yFor(currentPrice);
   const markerLabelX = Math.min(Math.max(markerX, PLOT_LEFT + 14), PLOT_RIGHT - 14);
@@ -150,7 +181,13 @@ export function DutchAuctionPriceChart({ auction, now, className }: DutchAuction
           x2={markerX}
           y2={PLOT_BOTTOM}
         />
-        <circle className="dutch-auction-chart__now-dot" cx={markerX} cy={markerY} r={4} />
+        <circle
+          className="dutch-auction-chart__now-dot"
+          cx={markerX}
+          cy={markerY}
+          r={4}
+          data-price-stroops={currentPriceStroops.toString()}
+        />
         <text className="dutch-auction-chart__now-label" x={markerLabelX} y={PLOT_TOP - 6} textAnchor="middle">
           Now
         </text>
@@ -169,7 +206,9 @@ export function DutchAuctionPriceChart({ auction, now, className }: DutchAuction
           {samples.map((sample) => (
             <tr key={sample.progress}>
               <th scope="row">{sample.label}</th>
-              <td>{plainNumber(sample.price)}</td>
+              <td data-price-stroops={sample.priceStroops.toString()}>
+                {plainNumber(sample.price)}
+              </td>
             </tr>
           ))}
         </tbody>

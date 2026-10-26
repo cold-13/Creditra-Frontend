@@ -1,18 +1,13 @@
 import { useEffect, useMemo } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 import { useRouteHead } from '../components/RouteAnnouncer';
+import { DutchAuctionCard } from '../components/DutchAuctionCard';
 import { DutchAuctionPriceChart } from '../components/DutchAuctionPriceChart';
-import { DutchAuctionPurchaseButton } from '../components/DutchAuctionPurchaseButton';
-import { DutchAuctionStatusBadge } from '../components/DutchAuctionStatusBadge';
 import { NoDataGraph } from '../components/illustrations';
 import { getAuctionById } from '../data/mockDutchAuctions';
 import { useDutchAuctionLivePrice } from '../hooks/useDutchAuctionLivePrice';
 import type { DutchAuction } from '../types/dutchAuction';
-import {
-  AUCTION_ID_MAX_LENGTH,
-  announceAuctionPurchase,
-  getSettledPrice,
-} from '../utils/dutchAuction';
+import { AUCTION_ID_MAX_LENGTH } from '../utils/dutchAuction';
 import { shortenAddress } from '../utils/format-address';
 import { COLOR, fmt, fmtDateTime } from '../utils/tokens';
 
@@ -117,12 +112,15 @@ function AuctionNotFound({ backHref }: { backHref: string }) {
 }
 
 /**
- * Full schedule, price curve and purchase action of one auction.
+ * Detail view built on top of the existing auction card.
+ *
+ * The card keeps all established behaviour (purchase checks, service call,
+ * pending guard, live-region feedback, price alerts, lifecycle status,
+ * schedule validation and safe image fallback). This page adds the deep-link
+ * navigation, the full start/end schedule and the canonical price chart.
  */
 function AuctionSummary({ auction, backHref }: { auction: DutchAuction; backHref: string }) {
-  const { currentPrice, timeLeft, now } = useDutchAuctionLivePrice(auction);
-  const isActive = auction.status === 'Active';
-  const displayPrice = isActive ? currentPrice : getSettledPrice(auction);
+  const { now } = useDutchAuctionLivePrice(auction);
 
   return (
     <div className="dutch-auction-detail" style={{ padding: '1rem' }}>
@@ -132,37 +130,11 @@ function AuctionSummary({ auction, backHref }: { auction: DutchAuction; backHref
         </Link>
       </nav>
 
-      <header
-        style={{
-          display: 'flex',
-          gap: '1rem',
-          flexWrap: 'wrap',
-          alignItems: 'flex-start',
-          marginBottom: '1.5rem',
-        }}
-      >
-        <img
-          src={auction.nft.image}
-          alt={auction.nft.name}
-          style={{
-            width: '160px',
-            height: '160px',
-            borderRadius: '8px',
-            objectFit: 'cover',
-            border: `1px solid ${COLOR.border}`,
-          }}
-        />
-        <div style={{ flex: '1 1 15rem', minWidth: 0 }}>
-          <h1 style={{ margin: 0, color: COLOR.text, fontSize: '1.5rem' }}>{auction.nft.name}</h1>
-          <p style={{ margin: '0.35rem 0', color: COLOR.muted, fontSize: '0.9rem' }}>
-            {auction.nft.collection} · Token #{auction.nft.tokenId}
-          </p>
-          <p style={{ margin: '0 0 0.5rem', color: COLOR.muted, fontSize: '0.9rem' }}>
-            Seller: {shortenAddress(auction.seller)}
-          </p>
-          <DutchAuctionStatusBadge status={auction.status} />
-        </div>
-      </header>
+      <DutchAuctionCard
+        auction={auction}
+        headingLevel="h1"
+        showDetailLink={false}
+      />
 
       <section aria-labelledby="auction-schedule-title" style={{ marginBottom: '1.5rem' }}>
         <h2 id="auction-schedule-title" style={{ margin: '0 0 0.75rem', color: COLOR.text, fontSize: '1.1rem' }}>
@@ -193,45 +165,16 @@ function AuctionSummary({ auction, backHref }: { auction: DutchAuction; backHref
             </dd>
           </div>
           <div>
-            <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>Start price</dt>
+            <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>Seller</dt>
             <dd style={{ margin: '0.25rem 0 0', color: COLOR.text, fontSize: '0.95rem' }}>
-              {fmt(auction.startPrice)}
+              {shortenAddress(auction.seller)}
             </dd>
           </div>
-          <div>
-            <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>Floor price</dt>
-            <dd style={{ margin: '0.25rem 0 0', color: COLOR.text, fontSize: '0.95rem' }}>
-              {fmt(auction.floorPrice)}
-            </dd>
-          </div>
-          <div>
-            <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>
-              {auction.status === 'Completed' ? 'Final price' : 'Current price'}
-            </dt>
-            <dd
-              style={{
-                margin: '0.25rem 0 0',
-                color: isActive ? COLOR.accent : COLOR.text,
-                fontSize: '1.15rem',
-                fontWeight: 600,
-              }}
-            >
-              {fmt(displayPrice)}
-            </dd>
-          </div>
-          {isActive && (
+          {auction.status === 'Completed' && auction.finalPrice !== undefined && (
             <div>
-              <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>Time left</dt>
-              <dd style={{ margin: '0.25rem 0 0', color: COLOR.warning, fontSize: '1rem', fontWeight: 600 }}>
-                {timeLeft}
-              </dd>
-            </div>
-          )}
-          {auction.status === 'Completed' && auction.winner && (
-            <div>
-              <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>Winner</dt>
-              <dd style={{ margin: '0.25rem 0 0', color: COLOR.text, fontSize: '0.95rem' }}>
-                {shortenAddress(auction.winner)}
+              <dt style={{ margin: 0, color: COLOR.muted, fontSize: '0.75rem' }}>Final price</dt>
+              <dd style={{ margin: '0.25rem 0 0', color: COLOR.text, fontSize: '1.15rem', fontWeight: 600 }}>
+                {fmt(auction.finalPrice)}
               </dd>
             </div>
           )}
@@ -253,19 +196,6 @@ function AuctionSummary({ auction, backHref }: { auction: DutchAuction; backHref
           <DutchAuctionPriceChart auction={auction} now={now} />
         </div>
       </section>
-
-      {isActive && (
-        <section aria-labelledby="auction-purchase-title">
-          <h2 id="auction-purchase-title" style={{ margin: '0 0 0.75rem', color: COLOR.text, fontSize: '1.1rem' }}>
-            Purchase
-          </h2>
-          <DutchAuctionPurchaseButton
-            auctionId={auction.id}
-            price={currentPrice}
-            onPurchase={announceAuctionPurchase}
-          />
-        </section>
-      )}
     </div>
   );
 }

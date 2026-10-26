@@ -1,20 +1,30 @@
-import type { DutchAuctionStatus } from '../types/dutchAuction';
-import { COLOR } from '../utils/tokens';
+import type { EffectiveDutchAuctionStatus } from '../lib/dutch-auction-lifecycle';
 
 /**
  * Status pill for a Dutch auction.
  *
  * Shared by the list card and the `/dutch-auctions/:auctionId` detail page
- * so an auction reads the same in both places.
+ * so an auction reads the same in both places. Accepts the effective
+ * lifecycle status (including Scheduled/Ended) rather than only the payload
+ * status.
  */
-const STATUS_STYLES: Record<DutchAuctionStatus, { background: string; color: string }> = {
+const STATUS_STYLES: Record<
+  EffectiveDutchAuctionStatus,
+  { background: string; color: string }
+> = {
+  Scheduled: { background: 'rgba(88,166,255,0.16)', color: '#58a6ff' },
   Active: { background: 'rgba(63,185,80,0.16)', color: '#8ee99d' },
+  Ended: { background: 'rgba(248,81,73,0.16)', color: '#ffb0aa' },
   Completed: { background: 'rgba(88,166,255,0.16)', color: '#58a6ff' },
   Cancelled: { background: 'rgba(248,81,73,0.16)', color: '#ffb0aa' },
 };
 
-export function DutchAuctionStatusBadge({ status }: { status: DutchAuctionStatus }) {
-  const style = STATUS_STYLES[status] ?? STATUS_STYLES.Cancelled;
+export function DutchAuctionStatusBadge({
+  status,
+}: {
+  status: EffectiveDutchAuctionStatus;
+}) {
+  const style = STATUS_STYLES[status];
 
   return (
     <span
